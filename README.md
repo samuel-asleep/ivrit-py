@@ -236,6 +236,22 @@ black .
 isort .
 ```
 
+# Bounty rules
+
+Like our bounties, and want to help?
+Here's how this works:
+
+1. You pick a bounty you're interested in, and let us know. We discuss it together to make sure you understand the issue.
+2. You let us know you're on it; we lock it for you for 2 weeks so you can develop, review and merge your code.
+3. The ONLY metric for whether you met the bounty goal is whether we decide to merge your PR.
+   Our key focus with reviews is to ensure high code and product quality.
+4. Once your PR is merged, you receive the bounty award.
+
+You can use any tool you'd like to write your code, including AI.
+Note that during review you will be asked questions about the code; if you are unable to explain what it does, or how (sometimes the case when doing Vibe coding), your PR will be discarded and you will not be able to reapply for this issue.
+
+Reviews may be done live.
+
 ## License
 
 MIT License - see LICENSE file for details. 
