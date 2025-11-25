@@ -289,6 +289,78 @@ class TranscriptionModel(ABC):
             Generator yielding Segment objects
         """
 
+    async def transcribe_async(
+        self,
+        *,
+        path: Optional[str] = None,
+        url: Optional[str] = None,
+        blob: Optional[str] = None,
+        language: Optional[str] = None,
+        diarize: bool = False,
+        diarization_args: Optional[Dict[str, Any]] = None,
+        output_options: Optional[Dict[str, Any]] = None,
+        verbose: bool = False,
+        **kwargs,
+    ) -> AsyncGenerator[Segment, None]:
+        """
+        Transcribe audio using this model asynchronously.
+        
+        Runs the transcription in a thread pool to allow other coroutines to continue.
+        
+        Args:
+            path: Path to the audio file to transcribe (mutually exclusive with url and blob)
+            url: URL to download and transcribe (mutually exclusive with path and blob)
+            blob: Base64 encoded blob data to transcribe (mutually exclusive with path and url)
+            language: Language code for transcription (e.g., 'he' for Hebrew, 'en' for English)
+            diarize: Whether to enable speaker diarization  
+            diarization_args: Dictionary of arguments for diarization (engine, device, num_speakers, etc.)
+            output_options: Dictionary controlling output verbosity. Supported keys:
+                - word_timestamps (bool): Whether to populate word-level timestamps (default: True)
+                - extra_data (bool): Whether to populate extra metadata fields (default: True)
+            verbose: Whether to enable verbose output
+            **kwargs: Additional keyword arguments for the transcription model.
+        Returns:
+            AsyncGenerator yielding transcription segments
+            
+        Raises:
+            ValueError: If multiple input sources are provided, or none is provided
+            FileNotFoundError: If the specified path doesn't exist
+            Exception: For other transcription errors
+        """
+        # Validate arguments
+        provided_args = [arg for arg in [path, url, blob] if arg is not None]
+        if len(provided_args) > 1:
+            raise ValueError("Cannot specify multiple input sources - path, url, and blob are mutually exclusive")
+        
+        if len(provided_args) == 0:
+            raise ValueError("Must specify either 'path', 'url', or 'blob'")
+
+        # Default output options if not provided
+        if output_options is None:
+            output_options = {}
+        
+        # Set defaults for output options
+        output_options = {
+            'word_timestamps': output_options.get('word_timestamps', True),
+            'extra_data': output_options.get('extra_data', True),
+        }
+
+        # Define the synchronous function to run in thread
+        def run_transcription():
+            return list(self.transcribe_core(
+                path=path, url=url, blob=blob, language=language,
+                diarize=diarize, diarization_args=diarization_args,
+                output_options=output_options, verbose=verbose, **kwargs
+            ))
+        
+        # Run transcription in thread pool to allow other coroutines to continue
+        loop = asyncio.get_event_loop()
+        segments = await loop.run_in_executor(None, run_transcription)
+        
+        # Yield segments
+        for segment in segments:
+            yield segment
+
 
 def get_device_and_index(device: str) -> tuple[str, Optional[int]]:
     """
@@ -716,8 +788,6 @@ class FasterWhisperModel(TranscriptionModel):
             # Clean up temporary files created for URL downloads or blob processing
             if (url is not None or blob is not None) and os.path.exists(audio_path):
                 os.remove(audio_path)
-    
-
 
 
 class StableWhisperModel(TranscriptionModel):
@@ -899,7 +969,6 @@ class StableWhisperModel(TranscriptionModel):
             # Clean up temporary files created for URL downloads or blob processing
             if (url is not None or blob is not None) and os.path.exists(audio_path):
                 os.remove(audio_path)
-    
 
 
 class RunPodJob:
@@ -984,7 +1053,7 @@ class RunPodJob:
 
 
 class AsyncRunPodJob:
-    """Async version of RunPodJob"""
+    """Async version of RunPodJob for better scalability with high concurrency."""
     
     def __init__(self, api_key: str, endpoint_id: str, payload: dict):
         self.api_key = api_key
@@ -1257,7 +1326,10 @@ class RunPodModel(TranscriptionModel):
         **kwargs,
     ) -> AsyncGenerator[Segment, None]:
         """
-        Transcribe audio using this model asynchronously.
+        Transcribe audio using RunPod asynchronously with native async I/O.
+        
+        This specialized implementation uses aiohttp for better scalability
+        when handling many concurrent requests, avoiding thread pool exhaustion.
         
         Args:
             path: Path to the audio file to transcribe (mutually exclusive with url and blob)
@@ -1357,7 +1429,7 @@ class RunPodModel(TranscriptionModel):
         if len(str(payload)) > self.RUNPOD_MAX_PAYLOAD_LEN:
             raise ValueError(f"Payload length is {len(str(payload))}, exceeding max payload length of {self.RUNPOD_MAX_PAYLOAD_LEN}")
         
-        # Create and execute RunPod job
+        # Create and execute RunPod job using native async
         run_request = AsyncRunPodJob(self.api_key, self.endpoint_id, payload)
         
         # Submit the job
@@ -1406,7 +1478,6 @@ class RunPodModel(TranscriptionModel):
             finally:
                 if run_request:
                     await run_request.cancel()
-    
 
 
 def load_model(
