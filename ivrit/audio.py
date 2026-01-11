@@ -1009,7 +1009,11 @@ class WhisperCppModel(TranscriptionModel):
         args = {}
         if self.n_threads is not None:
             args['n_threads'] = self.n_threads
-        
+       
+        # Use beam-search by default.
+        # User can override this via model_kwargs. 
+        args['params_sampling_strategy'] = 1
+
         # Add any additional kwargs passed to the constructor
         args.update(self.model_kwargs)
         
