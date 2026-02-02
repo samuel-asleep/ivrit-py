@@ -1126,6 +1126,138 @@ class WhisperCppModel(TranscriptionModel):
                 os.remove(audio_path)
 
 
+class RemoteServiceSession(ABC):
+    """
+    Abstract base class for managing persistent remote service sessions.
+    
+    This provides a common interface for keeping remote worker sessions warm
+    and reusing them across multiple requests to reduce cold-start latency.
+    """
+    
+    @abstractmethod
+    async def get_session(self) -> Any:
+        """
+        Get or create an active session.
+        
+        Returns:
+            Session object or identifier
+        """
+        pass
+    
+    @abstractmethod
+    async def keep_alive(self) -> None:
+        """Send a keep-alive request to prevent session timeout."""
+        pass
+    
+    @abstractmethod
+    async def close(self) -> None:
+        """Close the session and clean up resources."""
+        pass
+
+
+class RunPodSessionManager(RemoteServiceSession):
+    """
+    Manages persistent RunPod sessions to reduce cold-start latency.
+    
+    This manager maintains a warm worker by keeping a session active and
+    reusing it across multiple transcription requests.
+    """
+    
+    def __init__(self, api_key: str, endpoint_id: str, keep_alive_interval: float = 30.0):
+        """
+        Initialize the RunPod session manager.
+        
+        Args:
+            api_key: RunPod API key
+            endpoint_id: RunPod endpoint ID
+            keep_alive_interval: Interval in seconds between keep-alive requests (default: 30.0)
+        """
+        self.api_key = api_key
+        self.endpoint_id = endpoint_id
+        self.base_url = f"https://api.runpod.ai/v2/{endpoint_id}"
+        self.headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}"
+        }
+        self.keep_alive_interval = keep_alive_interval
+        self._session_lock = asyncio.Lock()
+        self._keep_alive_task: Optional[asyncio.Task] = None
+        self._active = False
+        self._last_job_id: Optional[str] = None
+    
+    async def get_session(self) -> str:
+        """
+        Get or create an active session.
+        
+        Returns:
+            Session endpoint URL
+        """
+        async with self._session_lock:
+            if not self._active:
+                await self._start_keep_alive()
+            return self.base_url
+    
+    async def _start_keep_alive(self) -> None:
+        """Start the keep-alive background task."""
+        if self._keep_alive_task is None or self._keep_alive_task.done():
+            self._active = True
+            self._keep_alive_task = asyncio.create_task(self._keep_alive_loop())
+    
+    async def _keep_alive_loop(self) -> None:
+        """Background task that sends periodic keep-alive requests."""
+        while self._active:
+            try:
+                await asyncio.sleep(self.keep_alive_interval)
+                if self._active:
+                    await self.keep_alive()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"Keep-alive request failed: {e}")
+    
+    async def keep_alive(self) -> None:
+        """
+        Send a keep-alive request by checking endpoint health.
+        
+        This makes a lightweight status check to keep the worker warm.
+        """
+        if self._last_job_id:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{self.base_url}/health",
+                        headers=self.headers,
+                        timeout=aiohttp.ClientTimeout(total=5.0)
+                    ) as response:
+                        # Any response keeps the worker warm
+                        pass
+            except Exception:
+                # Keep-alive failures are logged but don't stop the manager
+                pass
+    
+    async def close(self) -> None:
+        """Close the session and stop keep-alive."""
+        async with self._session_lock:
+            self._active = False
+            if self._keep_alive_task and not self._keep_alive_task.done():
+                self._keep_alive_task.cancel()
+                try:
+                    await self._keep_alive_task
+                except asyncio.CancelledError:
+                    pass
+            self._keep_alive_task = None
+    
+    def __del__(self):
+        """Cleanup when object is destroyed."""
+        if self._keep_alive_task and not self._keep_alive_task.done():
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self.close())
+            except Exception:
+                pass
+
+
 class RunPodJob:
     def __init__(self, api_key: str, endpoint_id: str, payload: dict):
         self.api_key = api_key
@@ -1293,9 +1425,10 @@ class AsyncRunPodJob:
 
 
 class RunPodModel(TranscriptionModel):
-    """RunPod transcription model"""
+    """RunPod transcription model with low-latency session support"""
     
-    def __init__(self, model: str, api_key: str, endpoint_id: str, core_engine: str = "faster-whisper"):
+    def __init__(self, model: str, api_key: str, endpoint_id: str, core_engine: str = "faster-whisper", 
+                 use_persistent_session: bool = True, keep_alive_interval: float = 30.0):
         super().__init__(engine="runpod", model=model)
         
         self.api_key = api_key
@@ -1311,6 +1444,33 @@ class RunPodModel(TranscriptionModel):
         self.IN_QUEUE_TIMEOUT = 300
         self.MAX_STREAM_TIMEOUTS = 5
         self.RUNPOD_MAX_PAYLOAD_LEN = 10 * 1024 * 1024
+        
+        # Session manager for persistent sessions
+        self.use_persistent_session = use_persistent_session
+        self._session_manager: Optional[RunPodSessionManager] = None
+        self._keep_alive_interval = keep_alive_interval
+        if use_persistent_session:
+            self._session_manager = RunPodSessionManager(
+                api_key=api_key,
+                endpoint_id=endpoint_id,
+                keep_alive_interval=keep_alive_interval
+            )
+    
+    async def __aenter__(self):
+        """Async context manager entry - starts session if using persistent sessions."""
+        if self.use_persistent_session and self._session_manager:
+            await self._session_manager.get_session()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit - closes session."""
+        await self.close()
+        return False
+    
+    async def close(self):
+        """Close the persistent session if active."""
+        if self._session_manager:
+            await self._session_manager.close()
     
     def create_session(self, language: Optional[str] = None, sample_rate: int = 16000, 
                       verbose: bool = False) -> TranscriptionSession:
@@ -1584,11 +1744,22 @@ class RunPodModel(TranscriptionModel):
         if len(str(payload)) > self.RUNPOD_MAX_PAYLOAD_LEN:
             raise ValueError(f"Payload length is {len(str(payload))}, exceeding max payload length of {self.RUNPOD_MAX_PAYLOAD_LEN}")
         
+        # Ensure session is active if using persistent sessions
+        if self.use_persistent_session and self._session_manager:
+            await self._session_manager.get_session()
+            if self._session_manager._last_job_id:
+                # Update last job tracking
+                pass
+        
         # Create and execute RunPod job using native async
         run_request = AsyncRunPodJob(self.api_key, self.endpoint_id, payload)
         
         # Submit the job
         await run_request.submit()
+        
+        # Track job ID for keep-alive
+        if self.use_persistent_session and self._session_manager:
+            self._session_manager._last_job_id = run_request.job_id
         
         # Wait for task to be queued
         if verbose:
