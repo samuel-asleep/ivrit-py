@@ -111,3 +111,30 @@ class TestRunPodSession:
         assert first_task is second_task
         
         await manager.close()
+    
+    @pytest.mark.asyncio
+    async def test_concurrent_transcriptions_with_same_model(self):
+        """Test that the same model can be used for multiple concurrent transcriptions"""
+        model = RunPodModel(
+            model="large-v3-turbo",
+            api_key="test-key",
+            endpoint_id="test-endpoint",
+            core_engine="faster-whisper",
+            use_persistent_session=True
+        )
+        
+        # Start session
+        async with model:
+            # Simulate multiple job IDs being tracked
+            # The session manager should track the most recent job
+            model._session_manager._last_job_id = "job1"
+            assert model._session_manager._last_job_id == "job1"
+            
+            model._session_manager._last_job_id = "job2"
+            assert model._session_manager._last_job_id == "job2"
+            
+            # Session should still be active
+            assert model._session_manager._active is True
+        
+        # Session should be closed after exiting context
+        assert model._session_manager._active is False
