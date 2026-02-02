@@ -9,7 +9,24 @@ try:
 except:
     __version__ = 'dev'
 
-from .audio import load_model, TranscriptionModel, TranscriptionSession, FasterWhisperModel, StableWhisperModel, WhisperCppModel, RunPodModel
+from .audio import (
+    load_model, 
+    TranscriptionModel, 
+    TranscriptionSession, 
+    FasterWhisperModel, 
+    StableWhisperModel, 
+    WhisperCppModel, 
+    RunPodModel,
+    RemoteServiceSession,
+    RunPodSessionManager
+)
 from .types import Segment
 
-__all__ = ['load_model', 'TranscriptionModel', 'TranscriptionSession', 'Segment'] 
+__all__ = [
+    'load_model', 
+    'TranscriptionModel', 
+    'TranscriptionSession', 
+    'Segment',
+    'RemoteServiceSession',
+    'RunPodSessionManager'
+] 

@@ -87,6 +87,54 @@ asyncio.run(transcribe_async())
 
 **Note**: Async transcription is only available for RunPod models. The sync `transcribe()` method uses the original sync implementation.
 
+#### Low-Latency RunPod Sessions
+
+RunPod models support persistent sessions that keep workers warm between requests, eliminating cold-start latency:
+
+```python
+import asyncio
+from ivrit.audio import load_model
+
+async def transcribe_with_persistent_session():
+    # Create RunPod model with persistent session (enabled by default)
+    model = load_model(
+        engine="runpod",
+        model="large-v3-turbo",
+        api_key="your-api-key",
+        endpoint_id="your-endpoint-id",
+        use_persistent_session=True,  # Default behavior
+        keep_alive_interval=30.0  # Keep worker warm with requests every 30 seconds
+    )
+    
+    # Use async context manager for automatic cleanup
+    async with model:
+        # First transcription - may have cold-start latency
+        async for segment in model.transcribe_async(path="audio1.mp3", language="he"):
+            print(f"{segment.start:.2f}s - {segment.end:.2f}s: {segment.text}")
+        
+        # Subsequent transcriptions use warm worker - no cold-start latency!
+        async for segment in model.transcribe_async(path="audio2.mp3", language="he"):
+            print(f"{segment.start:.2f}s - {segment.end:.2f}s: {segment.text}")
+
+asyncio.run(transcribe_with_persistent_session())
+```
+
+**Benefits**:
+- **Reduced latency**: Eliminates cold-start time on subsequent requests
+- **Better throughput**: Process multiple files faster with a warm worker
+- **Easy to use**: Enabled by default, works with async context managers
+
+To disable persistent sessions and use the legacy one-job-per-request behavior:
+```python
+model = load_model(
+    engine="runpod",
+    model="large-v3-turbo",
+    api_key="your-api-key",
+    endpoint_id="your-endpoint-id",
+    use_persistent_session=False
+)
+```
+
 ## API Reference
 
 ### `load_model()`
@@ -95,10 +143,14 @@ Load a transcription model for the specified engine and model.
 
 #### Parameters
 
-- **engine** (`str`): Transcription engine to use. Options: `"faster-whisper"`, `"stable-ts"`
+- **engine** (`str`): Transcription engine to use. Options: `"faster-whisper"`, `"stable-ts"`, `"runpod"`
 - **model** (`str`): Model name for the selected engine
-- **device** (`str`, optional): Device to use for inference. Default: `"auto"`. Options: `"auto"`, `"cpu"`, `"cuda"`, `"cuda:0"`, etc.
+- **device** (`str`, optional): Device to use for inference. Default: `"auto"`. Options: `"auto"`, `"cpu"`, `"cuda"`, `"cuda:0"`, etc. (for local engines)
 - **model_path** (`str`, optional): Custom path to the model (for faster-whisper)
+- **api_key** (`str`, optional): API key for remote services (required for `"runpod"`)
+- **endpoint_id** (`str`, optional): Endpoint ID for remote services (required for `"runpod"`)
+- **use_persistent_session** (`bool`, optional): Enable persistent session for reduced latency (default: `True` for `"runpod"`)
+- **keep_alive_interval** (`float`, optional): Interval in seconds between keep-alive requests (default: `30.0` for `"runpod"`)
 
 #### Returns
 
