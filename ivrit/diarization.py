@@ -60,7 +60,7 @@ class PyannoteDiarizationEngine(BaseDiarizationEngine):
     def __init__(self):
         # Check for all dependencies
         check_dependencies([
-            'numpy', 'pandas', 'torch', 'torchaudio', 'pyannote.audio'
+            'numpy', 'pandas', 'torch', 'pyannote.audio'
         ], 'PyAnnote diarization engine')
     
     def _match_speaker_to_interval(
@@ -208,24 +208,38 @@ class IvritDiarizationEngine(BaseDiarizationEngine):
     def __init__(self):
         # Check for all dependencies
         check_dependencies([
-            'numpy', 'pandas', 'torch', 'torchaudio', 'sklearn.cluster', 'speechbrain.inference.speaker'
+            'numpy', 'pandas', 'torch', 'imageio_ffmpeg', 'sklearn.cluster', 'speechbrain.inference.speaker'
         ], 'Ivrit diarization engine')
     
     def _load_audio_speechbrain(self, mp3_path: str, target_sr: int = 16000):
-        """Load MP3 file and convert to the format expected by SpeechBrain"""
+        """Load audio file and convert to the format expected by SpeechBrain using ffmpeg"""
+        import subprocess
+        import numpy as np
         import torch
-        import torchaudio
+        import imageio_ffmpeg
         
-        waveform, sample_rate = torchaudio.load(mp3_path)
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
         
-        # Convert to mono if stereo
-        if waveform.shape[0] > 1:
-            waveform = torch.mean(waveform, dim=0, keepdim=True)
+        # Use ffmpeg to decode audio to raw PCM at target sample rate, mono
+        cmd = [
+            ffmpeg_exe,
+            '-i', mp3_path,
+            '-f', 's16le',        # 16-bit signed little-endian PCM
+            '-acodec', 'pcm_s16le',
+            '-ac', '1',           # mono
+            '-ar', str(target_sr), # target sample rate
+            '-'                   # output to stdout
+        ]
         
-        # Resample if needed
-        if sample_rate != target_sr:
-            resampler = torchaudio.transforms.Resample(sample_rate, target_sr)
-            waveform = resampler(waveform)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            check=True
+        )
+        
+        # Convert raw PCM bytes to numpy array then to torch tensor
+        audio_array = np.frombuffer(result.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+        waveform = torch.from_numpy(audio_array).unsqueeze(0)  # Add channel dimension
         
         return waveform, target_sr
 

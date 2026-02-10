@@ -3,15 +3,19 @@ This file includes modified code from WhisperX (https://github.com/m-bain/whispe
 """
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import tempfile
+import urllib.error
 import urllib.request
 import base64
 from typing import Optional, TYPE_CHECKING, List, Dict, Any
 
 if TYPE_CHECKING:
     import numpy.typing as npt
+
+logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
 
@@ -90,15 +94,28 @@ def get_audio_file_path(
 
     if url is not None:
         if verbose:
-            print(f"Downloading audio from: {url}")
+            logger.info(f"Downloading audio from: {url}")
 
         temp_file = tempfile.NamedTemporaryFile(suffix=".audio", delete=False)
         audio_path = temp_file.name
-        urllib.request.urlretrieve(url, audio_path)
+        try:
+            urllib.request.urlretrieve(url, audio_path)
+        except urllib.error.HTTPError as e:
+            logger.error(f"Failed to download audio from URL: HTTP {e.code} {e.reason} - {url}")
+            os.remove(audio_path)
+            raise RuntimeError(
+                f"Failed to download audio from URL (HTTP {e.code} {e.reason}): {url}"
+            ) from e
+        except urllib.error.URLError as e:
+            logger.error(f"Failed to download audio from URL: {e.reason} - {url}")
+            os.remove(audio_path)
+            raise RuntimeError(
+                f"Failed to download audio from URL ({e.reason}): {url}"
+            ) from e
 
     if blob is not None:
         if verbose:
-            print("Processing blob data")
+            logger.info("Processing blob data")
 
         temp_file = tempfile.NamedTemporaryFile(suffix=".audio", delete=False)
         audio_path = temp_file.name
@@ -108,6 +125,7 @@ def get_audio_file_path(
             with open(audio_path, 'wb') as f:
                 f.write(blob_bytes)
         except Exception as e:
+            logger.error(f"Failed to decode blob data: {e}")
             raise ValueError(f"Failed to decode blob data: {e}")
 
     if not os.path.exists(audio_path):
@@ -157,6 +175,7 @@ def load_audio(file: str, sr: int = SAMPLE_RATE) -> npt.NDArray:
         ]
         out = subprocess.run(cmd, capture_output=True, check=True).stdout
     except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to load audio via ffmpeg: {e.stderr.decode()}")
         raise RuntimeError(f"Failed to load audio: {e.stderr.decode()}") from e
 
     return np.frombuffer(out, np.int16).flatten().astype(np.float32) / 32768.0

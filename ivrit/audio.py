@@ -600,8 +600,7 @@ class WhisperSession(TranscriptionSession):
                     return []
             
         except Exception as e:
-            if self.verbose:
-                logger.error(f"Error during session buffer transcription: {e}")
+            logger.error(f"Error during session buffer transcription: {e}")
             return []
         finally:
             # Close the WAV buffer
@@ -783,10 +782,9 @@ class FasterWhisperModel(TranscriptionModel):
                     yield segment
                 
         except Exception as e:
-            if verbose:
-                logger.error(f"Error during transcription: {e}")
+            logger.error(f"Error during transcription: {e}")
             raise
-        
+
         finally:
             # Clean up temporary files created for URL downloads or blob processing
             if (url is not None or blob is not None) and os.path.exists(audio_path):
@@ -964,10 +962,9 @@ class StableWhisperModel(TranscriptionModel):
                     yield segment
                 
         except Exception as e:
-            if verbose:
-                logger.error(f"Error during transcription: {e}")
+            logger.error(f"Error during transcription: {e}")
             raise
-        
+
         finally:
             # Clean up temporary files created for URL downloads or blob processing
             if (url is not None or blob is not None) and os.path.exists(audio_path):
@@ -1116,10 +1113,9 @@ class WhisperCppModel(TranscriptionModel):
                 yield segment_obj
                 
         except Exception as e:
-            if verbose:
-                logger.error(f"Error during transcription: {e}")
+            logger.error(f"Error during transcription: {e}")
             raise
-        
+
         finally:
             # Clean up temporary files created for URL downloads or blob processing
             if (url is not None or blob is not None) and os.path.exists(audio_path):
@@ -1269,8 +1265,11 @@ class RunPodJob:
         )
 
         if response.status_code == 401:
+            logger.error("RunPod API authentication failed: invalid API key")
             raise Exception("Invalid RunPod API key")
 
+        if not response.ok:
+            logger.error(f"RunPod job submission failed: HTTP {response.status_code} {response.reason}")
         response.raise_for_status()
 
         result = response.json()
@@ -1311,14 +1310,14 @@ class RunPodJob:
                             decoded_element = Segment(**element)
                             yield decoded_element
                         except Exception as e:
-                            # If JSON decode fails, raise the exception
+                            logger.error(f"Failed to decode RunPod stream element: {e}")
                             raise Exception(f"Failed to decode JSON: {e}")
 
                 if data['status'] == 'COMPLETED':
                     return
 
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON response: {e}")
+                logger.error(f"Failed to parse RunPod JSON response: {e}")
                 return
 
     def cancel(self):
@@ -1355,8 +1354,11 @@ class AsyncRunPodJob:
                 json=self.payload
             ) as response:
                 if response.status == 401:
+                    logger.error("RunPod API authentication failed: invalid API key")
                     raise Exception("Invalid RunPod API key")
-                
+
+                if response.status >= 400:
+                    logger.error(f"RunPod async job submission failed: HTTP {response.status}")
                 response.raise_for_status()
                 result = await response.json()
                 self.job_id = result.get("id")
@@ -1396,14 +1398,14 @@ class AsyncRunPodJob:
                                     decoded_element = Segment(**element)
                                     yield decoded_element
                                 except Exception as e:
-                                    # If JSON decode fails, raise the exception
+                                    logger.error(f"Failed to decode RunPod async stream element: {e}")
                                     raise Exception(f"Failed to decode JSON: {e}")
 
                         if data['status'] == 'COMPLETED':
                             return
 
                     except json.JSONDecodeError as e:
-                        logger.error(f"Failed to parse JSON response: {e}")
+                        logger.error(f"Failed to parse RunPod async JSON response: {e}")
                         return
 
     async def cancel(self):
@@ -1562,17 +1564,19 @@ class RunPodModel(TranscriptionModel):
                         audio_data = f.read()
                     payload["input"]["transcribe_args"]["blob"] = base64.b64encode(audio_data).decode('utf-8')
                 except Exception as e:
+                    logger.error(f"Failed to read audio file for RunPod: {e}")
                     raise Exception(f"Failed to read audio file: {e}")
             else:
                 # Use blob data directly
                 payload["input"]["transcribe_args"]["blob"] = data_source
         else:
             payload["input"]["transcribe_args"]["url"] = data_source
-        
+
         # Check payload size
         if len(str(payload)) > self.RUNPOD_MAX_PAYLOAD_LEN:
+            logger.error(f"RunPod payload too large: {len(str(payload))} bytes (max {self.RUNPOD_MAX_PAYLOAD_LEN})")
             raise ValueError(f"Payload length is {len(str(payload))}, exceeding max payload length of {self.RUNPOD_MAX_PAYLOAD_LEN}")
-        
+
         # Create and execute RunPod job
         run_request = RunPodJob(self.api_key, self.endpoint_id, payload)
         
@@ -1606,12 +1610,13 @@ class RunPodModel(TranscriptionModel):
             except requests.exceptions.ReadTimeout:
                 timeouts += 1
                 if timeouts > self.MAX_STREAM_TIMEOUTS:
+                    logger.error(f"RunPod stream timeouts exceeded maximum ({self.MAX_STREAM_TIMEOUTS})")
                     raise Exception(f"Number of request.stream() timeouts exceeded the maximum ({self.MAX_STREAM_TIMEOUTS})")
-                if verbose:
-                    logger.warning(f"Stream timeout {timeouts}/{self.MAX_STREAM_TIMEOUTS}, retrying...")
+                logger.warning(f"RunPod stream timeout {timeouts}/{self.MAX_STREAM_TIMEOUTS}, retrying...")
                 continue
-                
+
             except Exception as e:
+                logger.error(f"Exception during RunPod streaming: {e}")
                 run_request.cancel()
                 run_request = None
                 raise Exception(f"Exception during RunPod streaming: {e}")
@@ -1726,15 +1731,17 @@ class RunPodModel(TranscriptionModel):
                         audio_data = f.read()
                     payload["input"]["transcribe_args"]["blob"] = base64.b64encode(audio_data).decode('utf-8')
                 except Exception as e:
+                    logger.error(f"Failed to read audio file for RunPod async: {e}")
                     raise Exception(f"Failed to read audio file: {e}")
             else:
                 # Use blob data directly
                 payload["input"]["transcribe_args"]["blob"] = data_source
         else:
             payload["input"]["transcribe_args"]["url"] = data_source
-        
+
         # Check payload size
         if len(str(payload)) > self.RUNPOD_MAX_PAYLOAD_LEN:
+            logger.error(f"RunPod payload too large: {len(str(payload))} bytes (max {self.RUNPOD_MAX_PAYLOAD_LEN})")
             raise ValueError(f"Payload length is {len(str(payload))}, exceeding max payload length of {self.RUNPOD_MAX_PAYLOAD_LEN}")
         
         # Ensure session is active if using persistent sessions
@@ -1781,12 +1788,13 @@ class RunPodModel(TranscriptionModel):
             except aiohttp.ClientError as e:
                 timeouts += 1
                 if timeouts > self.MAX_STREAM_TIMEOUTS:
+                    logger.error(f"RunPod async stream timeouts exceeded maximum ({self.MAX_STREAM_TIMEOUTS})")
                     raise Exception(f"Number of request.stream() timeouts exceeded the maximum ({self.MAX_STREAM_TIMEOUTS})")
-                if verbose:
-                    logger.warning(f"Stream timeout {timeouts}/{self.MAX_STREAM_TIMEOUTS}, retrying...")
+                logger.warning(f"RunPod async stream timeout {timeouts}/{self.MAX_STREAM_TIMEOUTS}, retrying...")
                 continue
-                
+
             except Exception as e:
+                logger.error(f"Exception during RunPod async streaming: {e}")
                 await run_request.cancel()
                 run_request = None
                 raise Exception(f"Exception during RunPod streaming: {e}")
